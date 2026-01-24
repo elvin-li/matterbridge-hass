@@ -791,8 +791,14 @@ export class MutableDevice {
 
   addBridgedDeviceBasicInformationClusterServer(): this {
     const device = this.getEndpoint('');
-    device.log.logName = this.deviceName;
-    device.deviceName = this.deviceName;
+    const friendlyName = this.get('').friendlyName;
+    const name = isValidString(friendlyName) ? friendlyName : this.deviceName;
+
+    // Debug logging
+    this.log.warn(`[DEBUG] addBridgedDeviceBasicInfo: friendlyName="${friendlyName}" deviceName="${this.deviceName}" final name="${name}" vendorName="${this.vendorName}" productName="${this.productName}"`);
+
+    device.log.logName = name;
+    device.deviceName = name;
     device.serialNumber = this.serialNumber;
     device.uniqueId = this.createUniqueId(this.deviceName, this.serialNumber, this.vendorName, this.productName);
     device.productId = undefined;
@@ -810,8 +816,8 @@ export class MutableDevice {
         vendorId: this.vendorId,
         vendorName: this.vendorName.slice(0, 32),
         productName: this.productName.slice(0, 32),
-        productLabel: this.deviceName.slice(0, 64),
-        nodeLabel: this.deviceName.slice(0, 32),
+        productLabel: name.slice(0, 64),
+        nodeLabel: name.slice(0, 32),
         serialNumber: this.serialNumber.slice(0, 32),
         uniqueId: this.createUniqueId(this.deviceName, this.serialNumber, this.vendorName, this.productName),
         softwareVersion: isValidNumber(this.softwareVersion, 0, UINT32_MAX) ? this.softwareVersion : undefined,
@@ -838,11 +844,18 @@ export class MutableDevice {
    * @returns {MatterbridgeEndpoint} The main MatterbridgeEndpoint.
    */
   create(remap: boolean = false): MatterbridgeEndpoint {
+    // Debug: log all endpoints before processing
+    this.log.warn(`[DEBUG] create() called for device "${this.deviceName}" with ${this.mutableDevices.size} endpoints, remap=${remap}`);
+    for (const [endpoint, device] of this.mutableDevices) {
+      this.log.warn(`[DEBUG] - endpoint="${endpoint}" (empty=${endpoint === ''}, length=${endpoint.length}) friendlyName="${device.friendlyName}" deviceTypes=${device.deviceTypes.length}`);
+    }
+
     // Remove duplicates and superset device types on all endpoints
     this.removeDuplicatedAndSupersetDeviceTypes();
     // With remap add all required cluster server to the child endpoints
     if (remap) {
-      for (const [_endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
+      for (const [_endpoint, device] of this.mutableDevices) {
+        if (_endpoint === '') continue;
         device.deviceTypes.forEach((deviceType) => {
           deviceType.requiredServerClusters.forEach((clusterId) => {
             // this.log.debug(`Adding cluster ${ClusterRegistry.get(clusterId)?.name} to ${_endpoint}...`);
@@ -856,14 +869,19 @@ export class MutableDevice {
     // Remap the not overlapping child endpoints to the main endpoint
     if (remap) {
       // Scan the child endpoints for the same device types and clusters
-      for (const [endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
+      for (const [endpoint, device] of this.mutableDevices) {
+        if (endpoint === '') continue;
         // this.log.debug(`Remapping endpoint ${endpoint}...`);
         let remapEndpoint = true;
         // Check duplicated device types
         for (const deviceType of device.deviceTypes) {
-          const duplicatedDeviceTypes = Array.from(this.mutableDevices.entries())
-            .filter(([e, _d]) => e !== endpoint)
-            .find(([_e, d]) => d.deviceTypes.includes(deviceType));
+          let duplicatedDeviceTypes;
+          for (const [e, d] of this.mutableDevices) {
+            if (e !== endpoint && d.deviceTypes.includes(deviceType)) {
+              duplicatedDeviceTypes = [e, d];
+              break;
+            }
+          }
           if (duplicatedDeviceTypes) {
             // this.log.debug(`Remapping endpoint ${endpoint} failed due to duplicated device type ${deviceType.code} in ${duplicatedDeviceTypes[0]}`);
             remapEndpoint = false;
@@ -871,9 +889,13 @@ export class MutableDevice {
         }
         // Check duplicated cluster servers ids
         for (const clusterServerId of device.clusterServersIds) {
-          const duplicatedClusterServersIds = Array.from(this.mutableDevices.entries())
-            .filter(([e, _d]) => e !== endpoint)
-            .find(([_e, d]) => d.clusterServersIds.includes(clusterServerId) || d.clusterServersObjs.find((obj) => obj.id === clusterServerId));
+          let duplicatedClusterServersIds;
+          for (const [e, d] of this.mutableDevices) {
+            if (e !== endpoint && (d.clusterServersIds.includes(clusterServerId) || d.clusterServersObjs.find((obj) => obj.id === clusterServerId))) {
+              duplicatedClusterServersIds = [e, d];
+              break;
+            }
+          }
           if (duplicatedClusterServersIds && clusterServerId !== Identify.Cluster.id && clusterServerId !== Groups.Cluster.id) {
             // this.log.debug(`Remapping endpoint ${endpoint} failed due to duplicated cluster server id ${ClusterRegistry.get(clusterServerId)?.name} in ${duplicatedClusterServersIds[0]}`);
             remapEndpoint = false;
@@ -881,9 +903,13 @@ export class MutableDevice {
         }
         // Check duplicated cluster server objects
         for (const clusterServerObjs of device.clusterServersObjs) {
-          const duplicatedClusterServersObjs = Array.from(this.mutableDevices.entries())
-            .filter(([e, _d]) => e !== endpoint)
-            .find(([_e, d]) => d.clusterServersIds.includes(clusterServerObjs.id) || d.clusterServersObjs.find((obj) => obj.id === clusterServerObjs.id));
+          let duplicatedClusterServersObjs;
+          for (const [e, d] of this.mutableDevices) {
+            if (e !== endpoint && (d.clusterServersIds.includes(clusterServerObjs.id) || d.clusterServersObjs.find((obj) => obj.id === clusterServerObjs.id))) {
+              duplicatedClusterServersObjs = [e, d];
+              break;
+            }
+          }
           if (duplicatedClusterServersObjs && clusterServerObjs.id !== Identify.Cluster.id && clusterServerObjs.id !== Groups.Cluster.id) {
             // this.log.debug(`Remapping endpoint ${endpoint} failed due to duplicated cluster server object id ${ClusterRegistry.get(clusterServerObjs.id)?.name} in ${duplicatedClusterServersObjs[0]}`);
             remapEndpoint = false;
@@ -891,6 +917,7 @@ export class MutableDevice {
         }
         if (remapEndpoint) {
           const mainDevice = this.get('');
+          if (isValidString(device.friendlyName) && device.friendlyName !== endpoint) mainDevice.friendlyName = device.friendlyName;
           mainDevice.deviceTypes.push(...device.deviceTypes);
           mainDevice.clusterServersIds.push(...device.clusterServersIds);
           mainDevice.clusterServersObjs.push(...device.clusterServersObjs);
@@ -951,9 +978,17 @@ export class MutableDevice {
     if (this.mode === 'server') {
       mainDevice.deviceTypes = mainDevice.deviceTypes.filter((deviceType) => deviceType.code !== bridgedNode.code);
     }
-    mainDevice.friendlyName = this.deviceName;
-    mainDevice.endpoint = new MatterbridgeEndpoint(mainDevice.deviceTypes as AtLeastOne<DeviceTypeDefinition>, { id: this.deviceName, mode: this.mode }, true);
-    mainDevice.endpoint.log.logName = this.deviceName;
+    if (!isValidString(mainDevice.friendlyName)) mainDevice.friendlyName = this.deviceName;
+
+    // Use deviceName as fallback if friendlyName is still empty (should not happen but be safe)
+    const endpointId = isValidString(mainDevice.friendlyName) ? mainDevice.friendlyName : this.deviceName;
+
+    mainDevice.endpoint = new MatterbridgeEndpoint(
+      mainDevice.deviceTypes as AtLeastOne<DeviceTypeDefinition>,
+      { id: endpointId, mode: this.mode },
+      true,
+    );
+    mainDevice.endpoint.log.logName = mainDevice.friendlyName;
     this.endpoints.set('', mainDevice.endpoint);
     return mainDevice.endpoint;
   }
@@ -967,7 +1002,15 @@ export class MutableDevice {
     if (!mainDevice.endpoint) throw new Error('Main endpoint is not defined. Call createMainEndpoint() first.');
 
     // Create the child endpoints
-    for (const [endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
+    for (const [endpoint, device] of this.mutableDevices) {
+      if (endpoint === '') continue;
+
+      // Validate endpoint ID is not empty
+      if (!isValidString(endpoint)) {
+        this.log.warn(`[DEBUG] Skipping invalid empty endpoint ID for device ${this.deviceName}, friendlyName: ${device.friendlyName}`);
+        continue;
+      }
+
       device.endpoint = mainDevice.endpoint.addChildDeviceType(
         endpoint,
         device.deviceTypes as AtLeastOne<DeviceTypeDefinition>,
@@ -1101,8 +1144,8 @@ export class MutableDevice {
   logMutableDevice(): this {
     this.log.debug(
       `Device ${idn}${this.deviceName}${rs}${db} serial number ${CYAN}${this.serialNumber}${rs}${db} vendor id ${CYAN}${this.vendorId}${rs}${db} ` +
-        `vendor name ${CYAN}${this.vendorName}${rs}${db} product name ${CYAN}${this.productName}${rs}${db} software version ${CYAN}${this.softwareVersion}${rs}${db} ` +
-        `software version string ${CYAN}${this.softwareVersionString}${rs}${db} hardware version ${CYAN}${this.hardwareVersion}${rs}${db} hardware version string ${CYAN}${this.hardwareVersionString}`,
+      `vendor name ${CYAN}${this.vendorName}${rs}${db} product name ${CYAN}${this.productName}${rs}${db} software version ${CYAN}${this.softwareVersion}${rs}${db} ` +
+      `software version string ${CYAN}${this.softwareVersionString}${rs}${db} hardware version ${CYAN}${this.hardwareVersion}${rs}${db} hardware version string ${CYAN}${this.hardwareVersionString}`,
     );
     for (const [endpoint, device] of this.mutableDevices) {
       const deviceTypes = device.deviceTypes.map((d) => '0x' + d.code.toString(16) + '-' + d.name);
@@ -1112,9 +1155,9 @@ export class MutableDevice {
       );
       this.log.debug(
         `- endpoint: ${ign}${endpoint === '' ? 'main' : endpoint}${rs}${db} => friendlyName ${CYAN}${device.friendlyName}${db} ` +
-          `${db}tagList: ${debugStringify(device.tagList)}${db} deviceTypes: ${debugStringify(deviceTypes)}${db} ` +
-          `clusterServersIds: ${debugStringify(clusterServersIds)}${db} clusterServersObjs: ${debugStringify(clusterServersObjsIds)}${db} ` +
-          `commandHandlers: ${debugStringify(device.commandHandlers)}${db} subscribeHandlers: ${debugStringify(device.subscribeHandlers)}${db}`,
+        `${db}tagList: ${debugStringify(device.tagList)}${db} deviceTypes: ${debugStringify(deviceTypes)}${db} ` +
+        `clusterServersIds: ${debugStringify(clusterServersIds)}${db} clusterServersObjs: ${debugStringify(clusterServersObjsIds)}${db} ` +
+        `commandHandlers: ${debugStringify(device.commandHandlers)}${db} subscribeHandlers: ${debugStringify(device.subscribeHandlers)}${db}`,
       );
     }
     return this;
