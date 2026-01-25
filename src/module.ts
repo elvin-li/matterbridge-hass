@@ -83,6 +83,9 @@ export interface HomeAssistantPlatformConfig extends PlatformConfig {
   postfix: string;
   airQualityRegex: string;
   enableServerRvc: boolean;
+  exposeChildDevices: boolean;
+  exposeChildDevicesWhiteList: string[];
+  exposeChildDevicesBlackList: string[];
 }
 
 /**
@@ -180,6 +183,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       this.config.postfix = isValidString(this.config.postfix, 1, 3) ? this.config.postfix : '';
       this.config.airQualityRegex = isValidString(this.config.airQualityRegex, 1) ? this.config.airQualityRegex : '';
       this.config.enableServerRvc = isValidBoolean(this.config.enableServerRvc) ? this.config.enableServerRvc : true;
+      this.config.exposeChildDevices = isValidBoolean(this.config.exposeChildDevices) ? this.config.exposeChildDevices : false;
+      this.config.exposeChildDevicesWhiteList = isValidArray(this.config.exposeChildDevicesWhiteList, 1) ? this.config.exposeChildDevicesWhiteList : [];
+      this.config.exposeChildDevicesBlackList = isValidArray(this.config.exposeChildDevicesBlackList, 1) ? this.config.exposeChildDevicesBlackList : [];
     }
 
     // Initialize air quality regex from config or use default
@@ -348,7 +354,16 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       }
 
       // Create a Mutable device with bridgedNode
-      this.log.info(`Creating device for individual entity ${idn}${entityName}${rs}${nf} domain ${CYAN}${domain}${nf} name ${CYAN}${name}${nf}`);
+      let exposeChildDevices = this.config.exposeChildDevices;
+      if (!exposeChildDevices) {
+        if (this.config.exposeChildDevicesWhiteList.includes(entityName) || this.config.exposeChildDevicesWhiteList.includes(entity.id)) {
+          exposeChildDevices = true;
+        }
+      } else {
+        if (this.config.exposeChildDevicesBlackList.includes(entityName) || this.config.exposeChildDevicesBlackList.includes(entity.id)) {
+          exposeChildDevices = false;
+        }
+      }
       const mutableDevice = new MutableDevice(
         this.matterbridge,
         entityName + (isValidString(this.config.namePostfix, 1, 3) ? ' ' + this.config.namePostfix : ''),
@@ -357,6 +372,12 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         'HomeAssistant',
         0x8000,
         domain,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        exposeChildDevices,
+        entity.name ?? entity.original_name ?? undefined,
       );
       mutableDevice.addDeviceTypes('', bridgedNode);
 
@@ -501,6 +522,16 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       }
 
       // Create a Mutable device
+      let exposeChildDevices = this.config.exposeChildDevices;
+      if (!exposeChildDevices) {
+        if (this.config.exposeChildDevicesWhiteList.includes(deviceName) || this.config.exposeChildDevicesWhiteList.includes(device.id)) {
+          exposeChildDevices = true;
+        }
+      } else {
+        if (this.config.exposeChildDevicesBlackList.includes(deviceName) || this.config.exposeChildDevicesBlackList.includes(device.id)) {
+          exposeChildDevices = false;
+        }
+      }
       const mutableDevice = new MutableDevice(
         this.matterbridge,
         deviceName + (isValidString(this.config.namePostfix, 1, 3) ? ' ' + this.config.namePostfix : ''),
@@ -508,7 +539,13 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         0xfff1,
         'HomeAssistant',
         0x8000,
-        device.model ?? 'Unknown',
+        device.manufacturer ?? 'Unknown',
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        exposeChildDevices,
+        device.name ?? undefined,
       );
       mutableDevice.addDeviceTypes('', bridgedNode);
       if (battery) {
@@ -668,6 +705,16 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       }
 
       // Create a Mutable device with bridgedNode
+      let exposeChildDevices = this.config.exposeChildDevices;
+      if (!exposeChildDevices) {
+        if (this.config.exposeChildDevicesWhiteList.includes(entityName) || this.config.exposeChildDevicesWhiteList.includes(entity.id)) {
+          exposeChildDevices = true;
+        }
+      } else {
+        if (this.config.exposeChildDevicesBlackList.includes(entityName) || this.config.exposeChildDevicesBlackList.includes(entity.id)) {
+          exposeChildDevices = false;
+        }
+      }
       this.log.info(`Creating device for split entity ${idn}${entityName}${rs}${nf} domain ${CYAN}${domain}${nf} name ${CYAN}${name}${nf}`);
       const mutableDevice = new MutableDevice(
         this.matterbridge,
@@ -677,6 +724,12 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
         'HomeAssistant',
         0x8000,
         domain,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        exposeChildDevices,
+        entity.name ?? entity.original_name ?? undefined,
       );
       mutableDevice.addDeviceTypes('', bridgedNode);
 
@@ -854,8 +907,8 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
           if (isValidNumber(brightness, 1, 255)) serviceAttributes['brightness'] = brightness;
           const color_temp =
             data.endpoint.hasClusterServer(ColorControl.Cluster.id) &&
-            data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'colorTemperatureMireds') &&
-            data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorMode') === ColorControl.ColorMode.ColorTemperatureMireds
+              data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'colorTemperatureMireds') &&
+              data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorMode') === ColorControl.ColorMode.ColorTemperatureMireds
               ? data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorTemperatureMireds')
               : undefined;
           if (isValidNumber(color_temp))
@@ -865,20 +918,20 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
                 : miredsToKelvin(color_temp, 'floor');
           const hs_color =
             data.endpoint.hasClusterServer(ColorControl.Cluster.id) &&
-            data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentHue') &&
-            data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentSaturation') &&
-            data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorMode') === ColorControl.ColorMode.CurrentHueAndCurrentSaturation
+              data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentHue') &&
+              data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentSaturation') &&
+              data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorMode') === ColorControl.ColorMode.CurrentHueAndCurrentSaturation
               ? [
-                  Math.round((data.endpoint.getAttribute(ColorControl.Cluster.id, 'currentHue') / 254) * 360),
-                  Math.round((data.endpoint.getAttribute(ColorControl.Cluster.id, 'currentSaturation') / 254) * 100),
-                ]
+                Math.round((data.endpoint.getAttribute(ColorControl.Cluster.id, 'currentHue') / 254) * 360),
+                Math.round((data.endpoint.getAttribute(ColorControl.Cluster.id, 'currentSaturation') / 254) * 100),
+              ]
               : undefined;
           if (isValidArray(hs_color, 2)) serviceAttributes['hs_color'] = hs_color;
           const xy_color =
             data.endpoint.hasClusterServer(ColorControl.Cluster.id) &&
-            data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentX') &&
-            data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentY') &&
-            data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorMode') === ColorControl.ColorMode.CurrentXAndCurrentY
+              data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentX') &&
+              data.endpoint.hasAttributeServer(ColorControl.Cluster.id, 'currentY') &&
+              data.endpoint.getAttribute(ColorControl.Cluster.id, 'colorMode') === ColorControl.ColorMode.CurrentXAndCurrentY
               ? convertMatterXYToHA(data.endpoint.getAttribute(ColorControl.Cluster.id, 'currentX'), data.endpoint.getAttribute(ColorControl.Cluster.id, 'currentY'))
               : undefined;
           if (isValidArray(xy_color, 2)) serviceAttributes['xy_color'] = xy_color;
@@ -936,20 +989,20 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     if (context && !context.fabric) {
       endpoint.log.debug(
         `Subscribed attribute ${hk}${ClusterRegistry.get(hassSubscribe.clusterId)?.name}${db}:${hk}${hassSubscribe.attribute}${db} ` +
-          `on endpoint ${or}${endpoint?.maybeId}${db}:${or}${endpoint?.maybeNumber}${db} changed for an offline update`,
+        `on endpoint ${or}${endpoint?.maybeId}${db}:${or}${endpoint?.maybeNumber}${db} changed for an offline update`,
       );
       return; // Skip offline updates
     }
     if ((typeof newValue !== 'object' && newValue === oldValue) || (typeof newValue === 'object' && deepEqual(newValue, oldValue))) {
       endpoint.log.debug(
         `Subscribed attribute ${hk}${ClusterRegistry.get(hassSubscribe.clusterId)?.name}${db}:${hk}${hassSubscribe.attribute}${db} ` +
-          `on endpoint ${or}${endpoint?.maybeId}${db}:${or}${endpoint?.maybeNumber}${db} not changed`,
+        `on endpoint ${or}${endpoint?.maybeId}${db}:${or}${endpoint?.maybeNumber}${db} not changed`,
       );
       return; // Skip unchanged values
     }
     endpoint.log.info(
       `${db}Subscribed attribute ${hk}${ClusterRegistry.get(hassSubscribe.clusterId)?.name}${db}:${hk}${hassSubscribe.attribute}${db} on endpoint ${or}${endpoint?.maybeId}${db}:${or}${endpoint?.maybeNumber}${db} ` +
-        `changed from ${YELLOW}${typeof oldValue === 'object' ? debugStringify(oldValue) : oldValue}${db} to ${YELLOW}${typeof newValue === 'object' ? debugStringify(newValue) : newValue}${db}`,
+      `changed from ${YELLOW}${typeof oldValue === 'object' ? debugStringify(oldValue) : oldValue}${db} to ${YELLOW}${typeof newValue === 'object' ? debugStringify(newValue) : newValue}${db}`,
     );
     const value = hassSubscribe.converter ? hassSubscribe.converter(newValue) : newValue;
     if (hassSubscribe.converter)
@@ -999,9 +1052,9 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
     if (old_state.state === 'unavailable' && new_state.state !== 'unavailable') {
       matterbridgeDevice.setAttribute(BridgedDeviceBasicInformation.Cluster.id, 'reachable', true, matterbridgeDevice.log);
     }
-    matterbridgeDevice.log.info(
+    endpoint.log.info(
       `${db}Received update event from Home Assistant device ${idn}${matterbridgeDevice?.deviceName}${rs}${db} entity ${CYAN}${entityId}${db} ` +
-        `from ${YELLOW}${old_state.state}${db} with ${debugStringify(old_state.attributes)}${db} to ${YELLOW}${new_state.state}${db} with ${debugStringify(new_state.attributes)}`,
+      `from ${YELLOW}${old_state.state}${db} with ${debugStringify(old_state.attributes)}${db} to ${YELLOW}${new_state.state}${db} with ${debugStringify(new_state.attributes)}`,
     );
     const domain = entityId.split('.')[0];
     if (['automation', 'scene', 'script', 'input_button'].includes(domain)) {
@@ -1018,15 +1071,15 @@ export class HomeAssistantPlatform extends MatterbridgeDynamicPlatform {
       const hassSensorConverter =
         new_state.attributes['device_class'] === 'voltage' && new_state.attributes['unit_of_measurement'] === 'V'
           ? hassDomainSensorsConverter.find(
-              (s) =>
-                s.domain === domain &&
-                s.withStateClass === new_state.attributes['state_class'] &&
-                s.withDeviceClass === new_state.attributes['device_class'] &&
-                s.deviceType === (this.batteryVoltageEntities.has(entityId) ? powerSource : electricalSensor),
-            )
+            (s) =>
+              s.domain === domain &&
+              s.withStateClass === new_state.attributes['state_class'] &&
+              s.withDeviceClass === new_state.attributes['device_class'] &&
+              s.deviceType === (this.batteryVoltageEntities.has(entityId) ? powerSource : electricalSensor),
+          )
           : hassDomainSensorsConverter.find(
-              (s) => s.domain === domain && s.withStateClass === new_state.attributes['state_class'] && s.withDeviceClass === new_state.attributes['device_class'],
-            );
+            (s) => s.domain === domain && s.withStateClass === new_state.attributes['state_class'] && s.withDeviceClass === new_state.attributes['device_class'],
+          );
       if (hassSensorConverter) {
         // accepted values: "0" "123" "-1" "23.5" "-0.25"
         const stateValue = /^-?\d+(\.\d+)?$/.test(new_state.state) ? parseFloat(new_state.state) : new_state.state;
