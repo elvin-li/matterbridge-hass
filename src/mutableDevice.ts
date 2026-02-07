@@ -43,6 +43,7 @@ import {
   CommandHandlerData,
   MatterbridgeFanControlServer,
   bridgedNode,
+  aggregator,
   PlatformMatterbridge,
 } from 'matterbridge';
 import { MatterbridgeRvcCleanModeServer, MatterbridgeRvcOperationalStateServer, MatterbridgeRvcRunModeServer } from 'matterbridge/devices';
@@ -130,6 +131,8 @@ export class MutableDevice {
   private readonly softwareVersionString: string;
   private readonly hardwareVersion: number;
   private readonly hardwareVersionString: string;
+  private readonly exposeChildDevices: boolean;
+  private readonly originalDeviceName: string;
 
   private composedType: string | undefined = undefined;
   private configUrl: string | undefined = undefined;
@@ -147,11 +150,15 @@ export class MutableDevice {
     softwareVersionString?: string,
     hardwareVersion?: number,
     hardwareVersionString?: string,
+    exposeChildDevices = false,
+    originalDeviceName?: string,
   ) {
     this.log = new AnsiLogger({ logName: 'MutableDevice', logTimestampFormat: TimestampFormat.TIME_MILLIS, logLevel: LogLevel.DEBUG });
 
     this.matterbridge = matterbridge;
     this.deviceName = deviceName;
+    this.originalDeviceName = originalDeviceName ?? deviceName;
+    this.exposeChildDevices = exposeChildDevices;
     this.serialNumber = serialNumber ?? '0x' + randomBytes(8).toString('hex');
     this.vendorId = VendorId(vendorId);
     this.vendorName = vendorName;
@@ -789,13 +796,16 @@ export class MutableDevice {
     return this;
   }
 
-  addBridgedDeviceBasicInformationClusterServer(): this {
-    const device = this.getEndpoint('');
-    device.log.logName = this.deviceName;
-    device.deviceName = this.deviceName;
+  addBridgedDeviceBasicInformationClusterServer(endpoint: string = ''): this {
+    const device = this.getEndpoint(endpoint);
+    const friendlyName = this.get(endpoint).friendlyName;
+    const name = (friendlyName && friendlyName.trim() !== '') ? friendlyName : (this.deviceName && this.deviceName.trim() !== '' ? this.deviceName : 'HASS Device');
+
+    // device.log.logName = name; // Matterbridge handles this
+    device.deviceName = name;
     device.serialNumber = this.serialNumber;
-    device.uniqueId = this.createUniqueId(this.deviceName, this.serialNumber, this.vendorName, this.productName);
-    device.productId = undefined;
+    device.uniqueId = this.createUniqueId(`${this.deviceName} ${endpoint}`, this.serialNumber, this.vendorName, this.productName);
+    device.productId = this.productId;
     device.productName = this.productName;
     device.vendorId = this.vendorId;
     device.vendorName = this.vendorName;
@@ -805,15 +815,15 @@ export class MutableDevice {
     device.hardwareVersionString = this.hardwareVersionString;
 
     this.addClusterServerObjs(
-      '',
+      endpoint,
       getClusterServerObj(BridgedDeviceBasicInformation.Cluster.id, BridgedDeviceBasicInformationServer, {
         vendorId: this.vendorId,
         vendorName: this.vendorName.slice(0, 32),
         productName: this.productName.slice(0, 32),
-        productLabel: this.deviceName.slice(0, 64),
-        nodeLabel: this.deviceName.slice(0, 32),
+        productLabel: name.slice(0, 64),
+        nodeLabel: name.slice(0, 32),
         serialNumber: this.serialNumber.slice(0, 32),
-        uniqueId: this.createUniqueId(this.deviceName, this.serialNumber, this.vendorName, this.productName),
+        uniqueId: this.createUniqueId(`${this.deviceName} ${endpoint}`, this.serialNumber, this.vendorName, this.productName),
         softwareVersion: isValidNumber(this.softwareVersion, 0, UINT32_MAX) ? this.softwareVersion : undefined,
         softwareVersionString: isValidString(this.softwareVersionString) ? this.softwareVersionString.slice(0, 64) : undefined,
         hardwareVersion: isValidNumber(this.hardwareVersion, 0, UINT16_MAX) ? this.hardwareVersion : undefined,
@@ -951,11 +961,93 @@ export class MutableDevice {
     if (this.mode === 'server') {
       mainDevice.deviceTypes = mainDevice.deviceTypes.filter((deviceType) => deviceType.code !== bridgedNode.code);
     }
-    mainDevice.friendlyName = this.deviceName;
-    mainDevice.endpoint = new MatterbridgeEndpoint(mainDevice.deviceTypes as AtLeastOne<DeviceTypeDefinition>, { id: this.deviceName, mode: this.mode }, true);
-    mainDevice.endpoint.log.logName = this.deviceName;
+
+    if (!mainDevice.friendlyName || mainDevice.friendlyName.trim() === '') {
+      mainDevice.friendlyName = this.deviceName;
+    }
+
+    const endpointId = (mainDevice.friendlyName && mainDevice.friendlyName.trim() !== '') ? mainDevice.friendlyName : this.deviceName;
+
+    if (this.mutableDevices.size > 1 && !mainDevice.deviceTypes.find((dt) => dt.code === aggregator.code)) {
+      mainDevice.deviceTypes.push(aggregator);
+    }
+
+    mainDevice.endpoint = new MatterbridgeEndpoint(
+      mainDevice.deviceTypes as AtLeastOne<DeviceTypeDefinition>,
+      { id: endpointId, mode: this.mode },
+      true,
+    );
+    mainDevice.endpoint.log.logName = mainDevice.friendlyName;
     this.endpoints.set('', mainDevice.endpoint);
     return mainDevice.endpoint;
+  }
+
+  /**
+   * Get priority score for device types to determine naming suffix
+   */
+  private getPriority(deviceTypes: DeviceTypeDefinition[]): number {
+    let priority = 0;
+    for (const dt of deviceTypes) {
+      if (dt.code === onOffLight.code) priority = Math.max(priority, 100);
+      if (dt.code === dimmableLight.code) priority = Math.max(priority, 100);
+      if (dt.code === colorTemperatureLight.code) priority = Math.max(priority, 100);
+      if (dt.code === extendedColorLight.code) priority = Math.max(priority, 100);
+      if (dt.code === onOffSwitch.code) priority = Math.max(priority, 90);
+      if (dt.code === dimmableSwitch.code) priority = Math.max(priority, 90);
+      if (dt.code === colorTemperatureSwitch.code) priority = Math.max(priority, 90);
+      if (dt.code === onOffOutlet.code) priority = Math.max(priority, 80);
+      if (dt.code === dimmableOutlet.code) priority = Math.max(priority, 80);
+    }
+    return priority;
+  }
+
+  /**
+   * Check if a device type exists in another endpoint
+   */
+  private hasConflict(deviceTypes: DeviceTypeDefinition[], endpoint: string): boolean {
+    for (const [otherEndpoint, otherDevice] of this.mutableDevices) {
+      if (otherEndpoint === endpoint) continue;
+      for (const dt of deviceTypes) {
+        if (otherDevice.deviceTypes.some(odt => odt.code === dt.code)) return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Check if device has actual functionality (clusters other than basic ones)
+   */
+  private hasFunctionality(device: MutableDeviceInterface): boolean {
+    const skip = [Identify.Cluster.id, Groups.Cluster.id, BridgedDeviceBasicInformation.Cluster.id, PowerSource.Cluster.id];
+    return device.clusterServersIds.some(id => !skip.includes(id));
+  }
+
+  /**
+   * Get device type suffix for child devices to avoid naming conflicts
+   * @param deviceTypes - Array of device type definitions
+   * @returns Suffix string (e.g., "(开关)", "(灯光)") or empty string
+   */
+  private getDeviceTypeSuffix(deviceTypes: DeviceTypeDefinition[]): string {
+    // Check device types in priority order
+    for (const dt of deviceTypes) {
+      // Lights
+      if (dt.code === onOffLight.code) return '(灯光)';
+      if (dt.code === dimmableLight.code) return '(可调光灯)';
+      if (dt.code === colorTemperatureLight.code) return '(色温灯)';
+      if (dt.code === extendedColorLight.code) return '(彩色灯)';
+
+      // Switches
+      if (dt.code === onOffSwitch.code) return '(开关)';
+      if (dt.code === dimmableSwitch.code) return '(调光开关)';
+      if (dt.code === colorTemperatureSwitch.code) return '(色温开关)';
+
+      // Outlets
+      if (dt.code === onOffOutlet.code) return '(插座)';
+      if (dt.code === dimmableOutlet.code) return '(可调光插座)';
+    }
+
+    // No specific suffix found
+    return '';
   }
 
   private createChildEndpoints() {
@@ -966,16 +1058,97 @@ export class MutableDevice {
     const mainDevice = this.mutableDevices.get('') as MutableDeviceInterface;
     if (!mainDevice.endpoint) throw new Error('Main endpoint is not defined. Call createMainEndpoint() first.');
 
+    // Super-aggressive naming strategy v2: regex-based stripping and forced prefixing
+    const usedNames = new Set<string>();
+    if (mainDevice.friendlyName) usedNames.add(mainDevice.friendlyName);
+
     // Create the child endpoints
     for (const [endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
+      // Logic for naming child endpoints
+      const suffix = this.getDeviceTypeSuffix(device.deviceTypes);
+      let baseName = '';
+
+      const isGenericName = !device.friendlyName || device.friendlyName.trim() === '' || device.friendlyName === endpoint || device.friendlyName === this.deviceName;
+
+      if (!isGenericName && device.friendlyName) {
+        let name = device.friendlyName.trim();
+
+        // 1. Regex to strip known prefixes
+        const brands = ['Xiaomi', 'Mi', 'Aqara', 'Yeelight', 'IKEA', 'Sonoff', 'Tuya', 'Smart Life', 'JD', '京东京造'];
+        const chineseBrands = ['小米', '米家', '小爱', '智能', '学习灯', '台灯', '落地灯', '立式学习灯', '伴侣', '插座', '开关', '通断器', '屏幕亮度', '京东', '京造', '京东京造'];
+
+        const allTerms = [...brands, ...chineseBrands, this.originalDeviceName, this.productName]
+          .filter(t => t && t.length > 0)
+          .sort((a, b) => b.length - a.length)
+          .map(t => t!.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+
+        const prefixRegex = new RegExp(`^(${allTerms.join('|')})[\\s\\-_:\\.]*`, 'i');
+
+        let stripped = false;
+        while (prefixRegex.exec(name)) {
+          const match = prefixRegex.exec(name);
+          const nextName = name.replace(prefixRegex, '').trim();
+          if (nextName === '') {
+            name = '';
+            stripped = true;
+            break;
+          }
+          name = nextName;
+          stripped = true;
+        }
+
+        // 2. Clear out redundant duplicate terms within the name
+        const words = name.split(/[\s\-_:\.]+/);
+        const uniqueWords = words.filter((word, index) => words.indexOf(word) === index);
+        name = uniqueWords.join(' ');
+
+        // 3. Force it to start with the current deviceName if it's a child endpoint
+        if (name === '' || (suffix && name === suffix)) {
+          name = suffix ? `${this.deviceName} ${suffix}` : this.deviceName;
+        } else if (!name.startsWith(this.deviceName)) {
+          name = `${this.deviceName} ${name}`;
+        }
+        baseName = name;
+      } else {
+        // Fallback to Main Device Name + Suffix
+        baseName = suffix ? `${this.deviceName} ${suffix}` : this.deviceName;
+      }
+
+      // Final redundancy check
+      while (baseName.startsWith(`${this.deviceName} ${this.deviceName}`)) {
+        baseName = baseName.replace(`${this.deviceName} ${this.deviceName}`, this.deviceName).trim();
+      }
+
+      // Deduplicate name
+      let finalName = baseName;
+      let counter = 1;
+      while (usedNames.has(finalName)) {
+        finalName = `${baseName} ${counter++}`;
+      }
+      usedNames.add(finalName);
+      device.friendlyName = finalName;
+
+      // Google Home Compatibility: We keep BridgedDeviceBasicInformation to have a name.
+      // We also keep bridgedNode device type as it is standard for bridged endpoints.
+      if (!device.deviceTypes.find(dt => dt.code === bridgedNode.code)) {
+        device.deviceTypes.push(bridgedNode);
+      }
+      if (!device.clusterServersIds.includes(BridgedDeviceBasicInformation.Cluster.id)) {
+        device.clusterServersIds.push(BridgedDeviceBasicInformation.Cluster.id);
+      }
+
       device.endpoint = mainDevice.endpoint.addChildDeviceType(
         endpoint,
         device.deviceTypes as AtLeastOne<DeviceTypeDefinition>,
         device.tagList.length ? { tagList: device.tagList } : {},
         true,
       );
-      device.endpoint.log.logName = device.friendlyName;
+      // device.endpoint.log.logName = device.friendlyName; // Matterbridge handles this? No, we set valid name
+      device.endpoint.log.logName = finalName;
       this.endpoints.set(endpoint, device.endpoint);
+
+      // Important: Add the basic info cluster server to actually set the name in Matter
+      this.addBridgedDeviceBasicInformationClusterServer(endpoint);
     }
     return this;
   }
@@ -1062,7 +1235,11 @@ export class MutableDevice {
 
     // Add clusters to the child endpoints
     const device = this.get(endpoint);
-    if (!device.endpoint) throw new Error('Child endpoint is not defined');
+    if (!device.endpoint) {
+      // Skip child devices without endpoints (when exposeChildDevices is false)
+      // this.log.debug(`Skipping createsClusters for endpoint ${endpoint} - endpoint not created`);
+      return this;
+    }
     // Add the cluster objects to the child endpoint
     for (const clusterServerObj of device.clusterServersObjs) {
       device.endpoint.behaviors.require(clusterServerObj.type, clusterServerObj.options);
@@ -1101,8 +1278,8 @@ export class MutableDevice {
   logMutableDevice(): this {
     this.log.debug(
       `Device ${idn}${this.deviceName}${rs}${db} serial number ${CYAN}${this.serialNumber}${rs}${db} vendor id ${CYAN}${this.vendorId}${rs}${db} ` +
-        `vendor name ${CYAN}${this.vendorName}${rs}${db} product name ${CYAN}${this.productName}${rs}${db} software version ${CYAN}${this.softwareVersion}${rs}${db} ` +
-        `software version string ${CYAN}${this.softwareVersionString}${rs}${db} hardware version ${CYAN}${this.hardwareVersion}${rs}${db} hardware version string ${CYAN}${this.hardwareVersionString}`,
+      `vendor name ${CYAN}${this.vendorName}${rs}${db} product name ${CYAN}${this.productName}${rs}${db} software version ${CYAN}${this.softwareVersion}${rs}${db} ` +
+      `software version string ${CYAN}${this.softwareVersionString}${rs}${db} hardware version ${CYAN}${this.hardwareVersion}${rs}${db} hardware version string ${CYAN}${this.hardwareVersionString}`,
     );
     for (const [endpoint, device] of this.mutableDevices) {
       const deviceTypes = device.deviceTypes.map((d) => '0x' + d.code.toString(16) + '-' + d.name);
@@ -1112,9 +1289,9 @@ export class MutableDevice {
       );
       this.log.debug(
         `- endpoint: ${ign}${endpoint === '' ? 'main' : endpoint}${rs}${db} => friendlyName ${CYAN}${device.friendlyName}${db} ` +
-          `${db}tagList: ${debugStringify(device.tagList)}${db} deviceTypes: ${debugStringify(deviceTypes)}${db} ` +
-          `clusterServersIds: ${debugStringify(clusterServersIds)}${db} clusterServersObjs: ${debugStringify(clusterServersObjsIds)}${db} ` +
-          `commandHandlers: ${debugStringify(device.commandHandlers)}${db} subscribeHandlers: ${debugStringify(device.subscribeHandlers)}${db}`,
+        `${db}tagList: ${debugStringify(device.tagList)}${db} deviceTypes: ${debugStringify(deviceTypes)}${db} ` +
+        `clusterServersIds: ${debugStringify(clusterServersIds)}${db} clusterServersObjs: ${debugStringify(clusterServersObjsIds)}${db} ` +
+        `commandHandlers: ${debugStringify(device.commandHandlers)}${db} subscribeHandlers: ${debugStringify(device.subscribeHandlers)}${db}`,
       );
     }
     return this;

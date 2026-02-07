@@ -2,7 +2,10 @@
   "title": "Matterbridge Home Assistant plugin",
   "description": "matterbridge-hass v. 0.0.1 by https://github.com/Luligu",
   "type": "object",
-  "required": ["host", "token"],
+  "required": [
+    "host",
+    "token"
+  ],
   "properties": {
     "name": {
       "description": "Plugin name",
@@ -129,6 +132,29 @@
       "description": "Enable the Robot Vacuum Cleaner in server mode (Apple Home will crash unless you use this mode!). Also blacklist any other entities related to the vacuum cleaner device to avoid Apple Home crashes.",
       "type": "boolean",
       "default": true
+    },
+    "exposeChildDevices": {
+      "description": "Expose child devices (switches, sensors, etc.) as separate Matter devices. When enabled, child devices will have type suffixes added to their names to avoid conflicts (e.g., '客厅背景灯 (开关)', '客厅背景灯 (灯光)'). When disabled (default), only the main device will be exposed.",
+      "type": "boolean",
+      "default": false
+    },
+    "exposeChildDevicesWhiteList": {
+      "description": "Show child devices for these specific devices when 'exposeChildDevices' is OFF (unchecked).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "selectFrom": "name"
+    },
+    "exposeChildDevicesBlackList": {
+      "description": "HIDE child devices for these specific devices when 'exposeChildDevices' is ON (checked).",
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "uniqueItems": true,
+      "selectFrom": "name"
     },
     "debug": {
       "description": "Enable the debug for the plugin (development only)",
