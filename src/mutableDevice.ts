@@ -44,6 +44,8 @@ import {
   MatterbridgeFanControlServer,
   bridgedNode,
   aggregator,
+  powerSource,
+  electricalSensor,
   PlatformMatterbridge,
 } from 'matterbridge';
 import { MatterbridgeRvcCleanModeServer, MatterbridgeRvcOperationalStateServer, MatterbridgeRvcRunModeServer } from 'matterbridge/devices';
@@ -1028,6 +1030,8 @@ export class MutableDevice {
     // Check device types
     for (const dt of source.deviceTypes) {
       if (dt.code === bridgedNode.code) continue;
+      if (dt.code === powerSource.code) continue;
+      if (dt.code === electricalSensor.code) continue;
       if (target.deviceTypes.find((t) => t.code === dt.code)) return true;
     }
 
