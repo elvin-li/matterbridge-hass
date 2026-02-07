@@ -850,57 +850,28 @@ export class MutableDevice {
   create(remap: boolean = false): MatterbridgeEndpoint {
     // Remove duplicates and superset device types on all endpoints
     this.removeDuplicatedAndSupersetDeviceTypes();
-    // With remap add all required cluster server to the child endpoints
+
+    // Smart merging logic
     if (remap) {
-      for (const [_endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
-        device.deviceTypes.forEach((deviceType) => {
-          deviceType.requiredServerClusters.forEach((clusterId) => {
-            // this.log.debug(`Adding cluster ${ClusterRegistry.get(clusterId)?.name} to ${_endpoint}...`);
-            device.clusterServersIds.push(clusterId);
-          });
-        });
-      }
-    }
-    // Filter out duplicate clusters and clusters objects on all endpoints
-    this.removeDuplicatedClusterServers();
-    // Remap the not overlapping child endpoints to the main endpoint
-    if (remap) {
-      // Scan the child endpoints for the same device types and clusters
-      for (const [endpoint, device] of Array.from(this.mutableDevices.entries()).filter(([endpoint]) => endpoint !== '')) {
-        // this.log.debug(`Remapping endpoint ${endpoint}...`);
-        let remapEndpoint = true;
-        // Check duplicated device types
-        for (const deviceType of device.deviceTypes) {
-          const duplicatedDeviceTypes = Array.from(this.mutableDevices.entries())
-            .filter(([e, _d]) => e !== endpoint)
-            .find(([_e, d]) => d.deviceTypes.includes(deviceType));
-          if (duplicatedDeviceTypes) {
-            // this.log.debug(`Remapping endpoint ${endpoint} failed due to duplicated device type ${deviceType.code} in ${duplicatedDeviceTypes[0]}`);
-            remapEndpoint = false;
+      // Stage 0: Filter and sort candidates by priority
+      const candidates = Array.from(this.mutableDevices.keys())
+        .filter((key) => key !== '' && this.hasFunctionality(this.mutableDevices.get(key)!))
+        .sort((a, b) => this.getPriority(this.mutableDevices.get(b)!) - this.getPriority(this.mutableDevices.get(a)!));
+
+      const mainDevice = this.get('');
+      const ungrouped: string[] = [];
+
+      // Stage 1: Merge to main device
+      // this.log.debug(` Stage 1: Merging ${candidates.length} candidates to main device`);
+      for (const key of candidates) {
+        const device = this.mutableDevices.get(key)!;
+        if (!this.hasConflict(mainDevice, device)) {
+          // Merge functionality to main device
+          if (isValidString(device.friendlyName) && device.friendlyName !== key) {
+            if (!mainDevice.friendlyName || mainDevice.friendlyName === '' || mainDevice.friendlyName === this.deviceName) {
+              mainDevice.friendlyName = device.friendlyName;
+            }
           }
-        }
-        // Check duplicated cluster servers ids
-        for (const clusterServerId of device.clusterServersIds) {
-          const duplicatedClusterServersIds = Array.from(this.mutableDevices.entries())
-            .filter(([e, _d]) => e !== endpoint)
-            .find(([_e, d]) => d.clusterServersIds.includes(clusterServerId) || d.clusterServersObjs.find((obj) => obj.id === clusterServerId));
-          if (duplicatedClusterServersIds && clusterServerId !== Identify.Cluster.id && clusterServerId !== Groups.Cluster.id) {
-            // this.log.debug(`Remapping endpoint ${endpoint} failed due to duplicated cluster server id ${ClusterRegistry.get(clusterServerId)?.name} in ${duplicatedClusterServersIds[0]}`);
-            remapEndpoint = false;
-          }
-        }
-        // Check duplicated cluster server objects
-        for (const clusterServerObjs of device.clusterServersObjs) {
-          const duplicatedClusterServersObjs = Array.from(this.mutableDevices.entries())
-            .filter(([e, _d]) => e !== endpoint)
-            .find(([_e, d]) => d.clusterServersIds.includes(clusterServerObjs.id) || d.clusterServersObjs.find((obj) => obj.id === clusterServerObjs.id));
-          if (duplicatedClusterServersObjs && clusterServerObjs.id !== Identify.Cluster.id && clusterServerObjs.id !== Groups.Cluster.id) {
-            // this.log.debug(`Remapping endpoint ${endpoint} failed due to duplicated cluster server object id ${ClusterRegistry.get(clusterServerObjs.id)?.name} in ${duplicatedClusterServersObjs[0]}`);
-            remapEndpoint = false;
-          }
-        }
-        if (remapEndpoint) {
-          const mainDevice = this.get('');
           mainDevice.deviceTypes.push(...device.deviceTypes);
           mainDevice.clusterServersIds.push(...device.clusterServersIds);
           mainDevice.clusterServersObjs.push(...device.clusterServersObjs);
@@ -908,15 +879,57 @@ export class MutableDevice {
           mainDevice.clusterClientsObjs.push(...device.clusterClientsObjs);
           mainDevice.commandHandlers.push(...device.commandHandlers);
           mainDevice.subscribeHandlers.push(...device.subscribeHandlers);
-          this.mutableDevices.delete(endpoint);
-          this.remappedEndpoints.add(endpoint);
-          this.log.debug(`*Remapped endpoint ${endpoint} of ${this.deviceName}`);
+          this.mutableDevices.delete(key);
+          this.remappedEndpoints.add(key);
         } else {
-          this.splitEndpoints.add(endpoint);
-          this.log.debug(`***Failed to remap endpoint ${endpoint} of ${this.deviceName}`);
+          ungrouped.push(key);
+        }
+      }
+
+      // Stage 2: Merge between remaining child devices to form minimal groups
+      const childGroups: { id: string; device: MutableDeviceInterface }[] = [];
+      // this.log.debug(` Stage 2: Grouping ${ungrouped.length} ungrouped entities`);
+      for (const key of ungrouped) {
+        const device = this.mutableDevices.get(key)!;
+        let merged = false;
+        for (const group of childGroups) {
+          if (!this.hasConflict(group.device, device)) {
+            // Merge into this group
+            group.device.deviceTypes.push(...device.deviceTypes);
+            group.device.clusterServersIds.push(...device.clusterServersIds);
+            group.device.clusterServersObjs.push(...device.clusterServersObjs);
+            group.device.clusterClientsIds.push(...device.clusterClientsIds);
+            group.device.clusterClientsObjs.push(...device.clusterClientsObjs);
+            group.device.commandHandlers.push(...device.commandHandlers);
+            group.device.subscribeHandlers.push(...device.subscribeHandlers);
+            this.mutableDevices.delete(key);
+            this.splitEndpoints.add(key);
+            merged = true;
+            break;
+          }
+        }
+        if (!merged) {
+          // Create a new child group
+          childGroups.push({ id: key, device: device });
+          this.mutableDevices.delete(key);
+        }
+      }
+
+      // Stage 3: Restore the grouped child devices to mutableDevices
+      childGroups.forEach((group) => {
+        this.mutableDevices.set(group.id, group.device);
+      });
+    }
+
+    // Filter out endpoints with no functionality if remapping was on
+    if (remap) {
+      for (const [key, device] of this.mutableDevices) {
+        if (key !== '' && !this.hasFunctionality(device)) {
+          this.mutableDevices.delete(key);
         }
       }
     }
+
     this.createMainEndpoint();
     this.createChildEndpoints();
     for (const [endpoint] of this.mutableDevices) {
@@ -983,43 +996,70 @@ export class MutableDevice {
   }
 
   /**
-   * Get priority score for device types to determine naming suffix
+   * Get priority score for a device type to determine merging order
+   * @param device - Mutable device interface
+   * @returns Priority score
    */
-  private getPriority(deviceTypes: DeviceTypeDefinition[]): number {
-    let priority = 0;
-    for (const dt of deviceTypes) {
-      if (dt.code === onOffLight.code) priority = Math.max(priority, 100);
-      if (dt.code === dimmableLight.code) priority = Math.max(priority, 100);
-      if (dt.code === colorTemperatureLight.code) priority = Math.max(priority, 100);
-      if (dt.code === extendedColorLight.code) priority = Math.max(priority, 100);
-      if (dt.code === onOffSwitch.code) priority = Math.max(priority, 90);
-      if (dt.code === dimmableSwitch.code) priority = Math.max(priority, 90);
-      if (dt.code === colorTemperatureSwitch.code) priority = Math.max(priority, 90);
-      if (dt.code === onOffOutlet.code) priority = Math.max(priority, 80);
-      if (dt.code === dimmableOutlet.code) priority = Math.max(priority, 80);
+  private getPriority(device: MutableDeviceInterface): number {
+    let priority = 1;
+    for (const dt of device.deviceTypes) {
+      if (dt.code === onOffLight.code || dt.code === dimmableLight.code || dt.code === colorTemperatureLight.code || dt.code === extendedColorLight.code) {
+        priority = Math.max(priority, 10);
+      } else if (dt.code === onOffSwitch.code || dt.code === dimmableSwitch.code || dt.code === colorTemperatureSwitch.code) {
+        priority = Math.max(priority, 8);
+      } else if (dt.code === onOffOutlet.code || dt.code === dimmableOutlet.code) {
+        priority = Math.max(priority, 7);
+      } else if (dt.code === bridgedNode.code) {
+        priority = Math.max(priority, 0);
+      } else {
+        priority = Math.max(priority, 5);
+      }
     }
     return priority;
   }
 
   /**
-   * Check if a device type exists in another endpoint
+   * Check if two devices have conflicting clusters or device types
+   * @param target - Target device interface
+   * @param source - Source device interface
+   * @returns True if there is a conflict
    */
-  private hasConflict(deviceTypes: DeviceTypeDefinition[], endpoint: string): boolean {
-    for (const [otherEndpoint, otherDevice] of this.mutableDevices) {
-      if (otherEndpoint === endpoint) continue;
-      for (const dt of deviceTypes) {
-        if (otherDevice.deviceTypes.some(odt => odt.code === dt.code)) return true;
-      }
+  private hasConflict(target: MutableDeviceInterface, source: MutableDeviceInterface): boolean {
+    // Check device types
+    for (const dt of source.deviceTypes) {
+      if (dt.code === bridgedNode.code) continue;
+      if (target.deviceTypes.find((t) => t.code === dt.code)) return true;
     }
+
+    // Check cluster servers
+    const skip = [Identify.Cluster.id, Groups.Cluster.id, BridgedDeviceBasicInformation.Cluster.id, PowerSource.Cluster.id];
+
+    const targetClusterIds = new Set(target.clusterServersIds);
+    target.clusterServersObjs.forEach((obj) => targetClusterIds.add(obj.id));
+
+    const sourceClusterIds = new Set(source.clusterServersIds);
+    source.clusterServersObjs.forEach((obj) => sourceClusterIds.add(obj.id));
+
+    for (const id of sourceClusterIds) {
+      if (skip.includes(id)) continue;
+      if (targetClusterIds.has(id)) return true;
+    }
+
     return false;
   }
 
   /**
-   * Check if device has actual functionality (clusters other than basic ones)
+   * Check if a device has any functional clusters (besides basic ones)
+   * @param device - Mutable device interface
+   * @returns True if it has functional clusters
    */
   private hasFunctionality(device: MutableDeviceInterface): boolean {
     const skip = [Identify.Cluster.id, Groups.Cluster.id, BridgedDeviceBasicInformation.Cluster.id, PowerSource.Cluster.id];
-    return device.clusterServersIds.some(id => !skip.includes(id));
+
+    const hasFunctionalClusters = device.clusterServersIds.some((id) => !skip.includes(id));
+    const hasFunctionalObjs = device.clusterServersObjs.some((obj) => !skip.includes(obj.id));
+
+    return hasFunctionalClusters || hasFunctionalObjs || device.deviceTypes.filter((dt) => dt.code !== bridgedNode.code).length > 0;
   }
 
   /**
