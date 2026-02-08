@@ -966,6 +966,20 @@ export class MutableDevice {
       if (deviceTypesMap.has(dimmableLight.code) && deviceTypesMap.has(extendedColorLight.code)) deviceTypesMap.delete(dimmableLight.code);
 
       if (deviceTypesMap.has(colorTemperatureLight.code) && deviceTypesMap.has(extendedColorLight.code)) deviceTypesMap.delete(colorTemperatureLight.code);
+
+      // Rule: Light > Outlet > Switch
+      // If we have any light, remove all switches and outlets
+      const hasLight = Array.from(deviceTypesMap.keys()).some(code =>
+        code === onOffLight.code || code === dimmableLight.code || code === colorTemperatureLight.code || code === extendedColorLight.code
+      );
+      if (hasLight) {
+        deviceTypesMap.delete(onOffSwitch.code);
+        deviceTypesMap.delete(dimmableSwitch.code);
+        deviceTypesMap.delete(colorTemperatureSwitch.code);
+        deviceTypesMap.delete(onOffOutlet.code);
+        deviceTypesMap.delete(dimmableOutlet.code);
+      }
+
       device.deviceTypes = Array.from(deviceTypesMap.values());
     }
     return this;
