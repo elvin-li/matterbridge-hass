@@ -1024,18 +1024,42 @@ export class MutableDevice {
   private getPriority(device: MutableDeviceInterface): number {
     let priority = 1;
     for (const dt of device.deviceTypes) {
-      if (dt.code === onOffLight.code || dt.code === dimmableLight.code || dt.code === colorTemperatureLight.code || dt.code === extendedColorLight.code) {
+      const code = dt.code;
+      // Lights (10)
+      if (code === 0x0100 || code === 0x0101 || code === 0x010C || code === 0x010D) {
         priority = Math.max(priority, 10);
-      } else if (dt.code === onOffSwitch.code || dt.code === dimmableSwitch.code || dt.code === colorTemperatureSwitch.code) {
+      }
+      // Switches (8)
+      else if (code === 0x0103 || code === 0x0104 || code === 0x0105) {
         priority = Math.max(priority, 8);
-      } else if (dt.code === onOffOutlet.code || dt.code === dimmableOutlet.code) {
+      }
+      // Outlets (7)
+      else if (code === 0x010A || code === 0x010B) {
         priority = Math.max(priority, 7);
-      } else if (dt.code === 0x0011 || dt.code === 0x0510) { // powerSource, electricalSensor
-        priority = Math.max(priority, 2);
-      } else if (dt.code === bridgedNode.code) {
-        priority = Math.max(priority, 0);
-      } else {
+      }
+      // Actuators: Lock, Cover, Vacuum, Fan, Thermostat, Pump (6)
+      else if (code === 0x000A || code === 0x0202 || code === 0x002D || code === 0x002B || code === 0x0301 || code === 0x0303) {
+        priority = Math.max(priority, 6);
+      }
+      // Primary Sensors: Contact, Occupancy, SmokeCo, WaterLeak, WaterFreeze, Rain (5)
+      else if (code === 0x0015 || code === 0x0107 || code === 0x0076 || code === 0x0016 || code === 0x0041 || code === 0x0044) {
         priority = Math.max(priority, 5);
+      }
+      // Environmental Sensors: Temp, Humidity, Pressure, Flow, LightSensor, AirQuality (3)
+      else if (code === 0x0302 || code === 0x0307 || code === 0x0305 || code === 0x0306 || code === 0x0106 || code === 0x002C) {
+        priority = Math.max(priority, 3);
+      }
+      // Power/Energy: PowerSource, ElectricalSensor (2)
+      else if (code === 0x0011 || code === 0x0510) {
+        priority = Math.max(priority, 2);
+      }
+      // BridgedNode (0)
+      else if (code === 0x0013) {
+        priority = Math.max(priority, 0);
+      }
+      // Others (4) for safety
+      else {
+        priority = Math.max(priority, 4);
       }
     }
     return priority;
