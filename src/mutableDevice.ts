@@ -60,6 +60,8 @@ import {
   Groups,
   Identify,
   PowerSource,
+  OnOff,
+  LevelControl,
   RvcCleanMode,
   RvcOperationalState,
   RvcRunMode,
@@ -1014,6 +1016,8 @@ export class MutableDevice {
         priority = Math.max(priority, 8);
       } else if (dt.code === onOffOutlet.code || dt.code === dimmableOutlet.code) {
         priority = Math.max(priority, 7);
+      } else if (dt.code === 0x0011 || dt.code === 0x0510) { // powerSource, electricalSensor
+        priority = Math.max(priority, 2);
       } else if (dt.code === bridgedNode.code) {
         priority = Math.max(priority, 0);
       } else {
@@ -1039,7 +1043,18 @@ export class MutableDevice {
     }
 
     // Check cluster servers
-    const skip = [Identify.Cluster.id, Groups.Cluster.id, BridgedDeviceBasicInformation.Cluster.id, PowerSource.Cluster.id];
+    const skip = [
+      Identify.Cluster.id,
+      Groups.Cluster.id,
+      BridgedDeviceBasicInformation.Cluster.id,
+      PowerSource.Cluster.id,
+      OnOff.Cluster.id,
+      LevelControl.Cluster.id,
+      ColorControl.Cluster.id,
+      ClusterId(29), // Descriptor
+      ClusterId(30), // Binding
+      ClusterId(31), // AccessControl
+    ];
 
     const targetClusterIds = new Set(target.clusterServersIds);
     target.clusterServersObjs.forEach((obj) => targetClusterIds.add(obj.id));
