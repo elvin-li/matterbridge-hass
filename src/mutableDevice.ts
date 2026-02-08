@@ -864,6 +864,7 @@ export class MutableDevice {
 
       const mainDevice = this.get('');
       const ungrouped: string[] = [];
+      let currentNamePriority = 0;
 
       // Stage 1: Merge to main device
       // this.log.debug(` Stage 1: Merging ${candidates.length} candidates to main device`);
@@ -871,9 +872,11 @@ export class MutableDevice {
         const device = this.mutableDevices.get(key)!;
         if (!this.hasConflict(mainDevice, device)) {
           // Merge functionality to main device
+          const priority = this.getPriority(device);
           if (isValidString(device.friendlyName) && device.friendlyName !== key) {
-            if (!mainDevice.friendlyName || mainDevice.friendlyName === '' || mainDevice.friendlyName === this.deviceName) {
+            if (!mainDevice.friendlyName || mainDevice.friendlyName === '' || mainDevice.friendlyName === this.deviceName || priority > currentNamePriority) {
               mainDevice.friendlyName = device.friendlyName;
+              currentNamePriority = priority;
             }
           }
           mainDevice.deviceTypes.push(...device.deviceTypes);
