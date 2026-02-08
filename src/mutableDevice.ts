@@ -932,6 +932,9 @@ export class MutableDevice {
       }
     }
 
+    // Filter out duplicate clusters and clusters objects on all endpoints
+    this.removeDuplicatedClusterServers();
+
     this.createMainEndpoint();
     this.createChildEndpoints();
     for (const [endpoint] of this.mutableDevices) {
@@ -1030,8 +1033,8 @@ export class MutableDevice {
     // Check device types
     for (const dt of source.deviceTypes) {
       if (dt.code === bridgedNode.code) continue;
-      if (dt.code === powerSource.code) continue;
-      if (dt.code === electricalSensor.code) continue;
+      if (dt.code === 0x0011) continue; // powerSource
+      if (dt.code === 0x0510) continue; // electricalSensor
       if (target.deviceTypes.find((t) => t.code === dt.code)) return true;
     }
 
